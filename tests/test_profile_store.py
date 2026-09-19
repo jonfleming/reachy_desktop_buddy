@@ -70,3 +70,12 @@ def test_bundled_profiles_enable_head_tracking_by_default() -> None:
         profile = read_profile_from_directory(profile_name, DEFAULT_PROFILES_DIRECTORY / profile_name)
 
         assert "head_tracking" in profile.default_tools, profile_name
+
+
+def test_default_profile_requires_time_and_weather_tool_calls() -> None:
+    """Buddy should not invent the time or weather instead of calling those tools."""
+    profile = read_profile_from_directory("default", DEFAULT_PROFILES_DIRECTORY / "default")
+
+    assert "pollen_robotics_reachy_mini_time_tool__get_time" in profile.instructions
+    assert "pollen_robotics_reachy_mini_weather_tool__get_weather" in profile.instructions
+    assert "Asking which timezone they mean is not enough" in profile.instructions

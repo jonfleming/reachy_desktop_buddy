@@ -163,6 +163,14 @@ HF_REALTIME_WS_URL=ws://127.0.0.1:8765/v1/realtime
 
 In the web UI's Settings view, the Connection section lets you choose either the built-in server or a local `host:port` target. The UI writes `HF_REALTIME_CONNECTION_MODE` for you, and the local path writes `HF_REALTIME_WS_URL` with a default of `localhost:8765`.
 
+Local [speech-to-speech](https://github.com/huggingface/speech-to-speech) tool calls need the Chat Completions LLM backend. `--llm_backend responses-api` (the default) talks to `/v1/responses` and often returns speech with no `function_call` items on vLLM/Qwen. Prefer:
+
+```bash
+speech-to-speech serve --llm_backend chat-completions ...
+```
+
+On vLLM, also pass `--enable-auto-tool-choice` and a Qwen-compatible `--tool-call-parser` (for example `hermes`). If Buddy logs `advertised_tools=[...]` but speech-to-speech still prints `Tools: chars=2`, the LLM server is not emitting tool calls.
+
 ## Running the app
 
 Activate your virtual environment, then launch:

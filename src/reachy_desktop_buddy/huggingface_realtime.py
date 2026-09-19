@@ -69,6 +69,11 @@ logger = logging.getLogger(__name__)
 
 _RESPONSE_DONE_TIMEOUT: Final[float] = 30.0
 _RESPONSE_REJECTION_RETRY_DELAY: Final[float] = 0.5
+_TOOL_CALLING_REMINDER: Final[str] = (
+    "Call tools by their exact names from the list. "
+    "When a request needs a tool, issue the function call in this turn. "
+    "Do not say you tracked, enrolled, searched, checked the time, or moved unless that function call was sent."
+)
 
 
 class InputTranscriptChunksByItem(BaseModel):
@@ -93,6 +98,14 @@ def to_realtime_tools_config(tool_specs: list[ToolSpec]) -> RealtimeToolsConfigP
     return realtime_tools
 
 
+def instructions_with_tool_reminder(instructions: str, tool_specs: list[ToolSpec]) -> str:
+    """Append the enabled tool names so the model cannot pretend a call happened."""
+    names = [spec["name"] for spec in tool_specs]
+    if not names:
+        return instructions
+    return f"{instructions.rstrip()}\n\nAvailable tools: {', '.join(names)}.\n{_TOOL_CALLING_REMINDER}"
+
+
 def _event_attr(obj: object, name: str) -> object:
     if obj is None:
         return None
@@ -101,8 +114,23 @@ def _event_attr(obj: object, name: str) -> object:
     return getattr(obj, name, None)
 
 
+def _session_tool_names(session: object) -> list[str]:
+    tools = _event_attr(session, "tools")
+    if not isinstance(tools, list):
+        return []
+    names: list[str] = []
+    for tool in tools:
+        name = _event_attr(tool, "name")
+        if not isinstance(name, str) or not name:
+            name = _event_attr(_event_attr(tool, "function"), "name")
+        if isinstance(name, str) and name:
+            names.append(name)
+    return names
+
+
 def _function_call_fields(item: object) -> tuple[str, str, str] | None:
-    if _event_attr(item, "type") != "function_call":
+    item_type = _event_attr(item, "type")
+    if item_type != "function_call" and str(item_type) != "function_call":
         return None
     name = _event_attr(item, "name")
     if not isinstance(name, str) or not name:
@@ -193,6 +221,8 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
         self._startup_greeting_sent = False
         self._in_flight_tool_calls: set[str] = set()
         self._tool_batch_needs_response = False
+        self._advertised_tool_names: list[str] = []
+        self._logged_local_speech_only_tools_warning = False
         self._attempted_localhost_fallback = False
 
     @staticmethod
@@ -303,7 +333,10 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
         """Return the Hugging Face OpenAI-compatible session config."""
         return RealtimeSessionCreateRequestParam(
             type="realtime",
-            instructions=get_session_instructions(self.instance_path),
+            instructions=instructions_with_tool_reminder(
+                get_session_instructions(self.instance_path),
+                tool_specs,
+            ),
             audio=RealtimeAudioConfigParam(
                 input=RealtimeAudioConfigInputParam(
                     # The OpenAI SDK type only includes 24 kHz PCM, but the HF
@@ -349,16 +382,7 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
         self._voice_override = resolved_voice
         if self.connection is not None:
             try:
-                await self.connection.session.update(
-                    session=RealtimeSessionCreateRequestParam(
-                        type="realtime",
-                        audio=RealtimeAudioConfigParam(
-                            output=RealtimeAudioConfigOutputParam(
-                                voice=resolved_voice,
-                            ),
-                        ),
-                    ),
-                )
+                await self.connection.session.update(session=self._get_session_config(get_tool_specs()))
                 return f"Voice changed to {resolved_voice}."
             except Exception as e:
                 logger.warning("Failed to update live session for voice change: %s", e)
@@ -376,8 +400,7 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
         previous_profile = config.REACHY_MINI_CUSTOM_PROFILE
         set_custom_profile(profile)
         try:
-            instructions = get_session_instructions(self.instance_path)
-            voice = self.get_current_voice()
+            get_session_instructions(self.instance_path)
             core_tools.initialize_tools(force=True)
         except Exception as exc:
             set_custom_profile(previous_profile)
@@ -386,17 +409,7 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
 
         if self.connection is not None:
             try:
-                await self.connection.session.update(
-                    session=RealtimeSessionCreateRequestParam(
-                        type="realtime",
-                        instructions=instructions,
-                        audio=RealtimeAudioConfigParam(
-                            output=RealtimeAudioConfigOutputParam(
-                                voice=voice,
-                            ),
-                        ),
-                    ),
-                )
+                await self.connection.session.update(session=self._get_session_config(get_tool_specs()))
                 logger.info("Applied personality via live update: %s", profile or "default")
             except Exception as exc:
                 logger.warning("Live update failed; will restart session: %s", exc)
@@ -851,9 +864,33 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
             if status == "cancelled":
                 logger.info("Response cancelled; listening for the next turn")
             else:
-                logger.info("Response finished with no tool calls")
+                logger.info(
+                    "Response finished with no tool calls; advertised_tools=%s",
+                    self._advertised_tool_names,
+                )
+                self._warn_if_local_llm_ignored_tools()
         for name, args_json, call_id in function_calls:
             await self._start_model_tool_call(name, args_json, call_id, source="response.done")
+
+    def _warn_if_local_llm_ignored_tools(self) -> None:
+        """Log once when a local LLM answers in speech despite advertised tools."""
+        if self._logged_local_speech_only_tools_warning:
+            return
+        if not self._advertised_tool_names or self._turn_user_done_at is None:
+            return
+        try:
+            mode = get_hf_connection_selection().mode
+        except RuntimeError:
+            return
+        if mode != HF_LOCAL_CONNECTION_MODE:
+            return
+        self._logged_local_speech_only_tools_warning = True
+        logger.warning(
+            "Local speech-to-speech returned speech with no function calls. "
+            "The Responses API path often ignores tools on vLLM/Qwen. Restart speech-to-speech with "
+            "--llm_backend chat-completions, and enable tool calling on the LLM server "
+            "(vLLM: --enable-auto-tool-choice and a Qwen tool-call parser)."
+        )
 
     async def _start_model_tool_call(
         self,
@@ -921,6 +958,7 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
         """Establish and manage a single realtime session."""
         tool_specs = get_tool_specs()
         tool_names = [tool["name"] for tool in tool_specs]
+        self._advertised_tool_names = list(tool_names)
         logger.info("Tools advertised to the realtime model (%d): %s", len(tool_names), tool_names)
         if "enroll_person" not in tool_names:
             logger.warning(
@@ -992,6 +1030,20 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
 
                     if event.type == "response.output_text.done":
                         logger.debug("response text done: %s", event.text)
+
+                    if event.type == "session.updated":
+                        accepted = _session_tool_names(_event_attr(event, "session"))
+                        logger.info(
+                            "Realtime session.updated accepted tools (%d): %s",
+                            len(accepted),
+                            accepted,
+                        )
+                        missing = [name for name in self._advertised_tool_names if name not in accepted]
+                        if missing:
+                            logger.warning(
+                                "Realtime session.updated omitted advertised tools: %s",
+                                missing,
+                            )
 
                     if event.type == "response.created":
                         self._mark_activity("response_created")

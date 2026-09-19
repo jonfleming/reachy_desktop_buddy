@@ -312,6 +312,70 @@ def test_huggingface_session_uses_configured_transcription_language(monkeypatch:
     assert session["audio"]["input"]["transcription"]["language"] == "zh"
 
 
+def test_session_config_advertises_tools_and_reminds_the_model(monkeypatch: Any) -> None:
+    """Session updates must include function tools and name them in the instructions."""
+    monkeypatch.setattr(hf_mod, "get_session_instructions", lambda _instance_path=None: "Stay brief.")
+    handler = HuggingFaceRealtimeHandler(ToolDependencies(reachy_mini=MagicMock(), movement_manager=MagicMock()))
+    tool_specs = [
+        {
+            "type": "function",
+            "name": "head_tracking",
+            "description": "Follow the user.",
+            "parameters": {"type": "object", "properties": {}},
+        }
+    ]
+
+    session = handler._get_session_config(tool_specs)
+
+    assert session["tool_choice"] == "auto"
+    assert session["tools"] == [
+        {
+            "type": "function",
+            "name": "head_tracking",
+            "description": "Follow the user.",
+            "parameters": {"type": "object", "properties": {}},
+        }
+    ]
+    assert "Available tools: head_tracking" in session["instructions"]
+    assert "Call tools by their exact names" in session["instructions"]
+    assert "issue the function call" in session["instructions"]
+
+
+def test_session_tool_names_read_flat_and_nested_tools() -> None:
+    """Accepted session tools may be flat realtime functions or nested chat-style functions."""
+    assert hf_mod._session_tool_names({"tools": [{"type": "function", "name": "head_tracking"}]}) == ["head_tracking"]
+    assert hf_mod._session_tool_names({"tools": [{"type": "function", "function": {"name": "dance"}}]}) == ["dance"]
+    assert hf_mod._session_tool_names({"tools": None}) == []
+
+
+@pytest.mark.asyncio
+async def test_run_session_warns_when_updated_session_omits_tools(
+    monkeypatch: Any, caplog: pytest.LogCaptureFixture
+) -> None:
+    """If the backend echoes no tools, log the advertised names that never landed."""
+    handler = _session_handler(
+        monkeypatch,
+        (_FakeEvent("session.updated", session={"tools": []}),),
+    )
+    monkeypatch.setattr(
+        hf_mod,
+        "get_tool_specs",
+        lambda: [
+            {
+                "type": "function",
+                "name": "head_tracking",
+                "description": "Follow the user.",
+                "parameters": {"type": "object", "properties": {}},
+            }
+        ],
+    )
+
+    with caplog.at_level(logging.WARNING, logger=hf_mod.logger.name):
+        await handler._run_realtime_session()
+
+    assert any("omitted advertised tools: ['head_tracking']" in record.message for record in caplog.records)
+
+
 @pytest.mark.asyncio
 async def test_run_realtime_session_passes_allocated_session_query(monkeypatch: Any) -> None:
     """Hugging Face sessions must forward the allocated session token to the websocket connect call."""
@@ -462,6 +526,7 @@ async def test_apply_personality_uses_selected_voice_for_lb_allocated_sessions(m
     """Live personality updates should honor the selected Qwen CustomVoice speaker."""
     monkeypatch.setattr(hf_mod, "get_session_instructions", lambda _instance_path=None: "new instructions")
     monkeypatch.setattr(hf_mod, "get_session_voice", lambda default=HF_DEFAULT_VOICE: "Serena")
+    monkeypatch.setattr(hf_mod, "get_tool_specs", lambda: [])
     monkeypatch.setattr(config, "HF_REALTIME_SESSION_URL", "https://lb.example.test/session")
 
     captured_update: dict[str, Any] = {}
@@ -483,6 +548,8 @@ async def test_apply_personality_uses_selected_voice_for_lb_allocated_sessions(m
     session = captured_update["session"]
     assert session["instructions"] == "new instructions"
     assert session["audio"]["output"]["voice"] == "Serena"
+    assert session["tools"] == []
+    assert session["tool_choice"] == "auto"
 
 
 @pytest.mark.asyncio
@@ -526,6 +593,8 @@ async def test_change_voice_updates_live_hf_session_without_restart(monkeypatch:
     handler.connection = FakeConnection()
     restart = AsyncMock(return_value=None)
     monkeypatch.setattr(handler, "_restart_session", restart)
+    monkeypatch.setattr(hf_mod, "get_session_instructions", lambda _instance_path=None: "test")
+    monkeypatch.setattr(hf_mod, "get_tool_specs", lambda: [])
 
     result = await handler.change_voice("Serena")
 
@@ -737,6 +806,32 @@ async def test_run_session_logs_speech_only_response(monkeypatch: Any, caplog: A
         await handler._run_realtime_session()
 
     assert "Response finished with no tool calls" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_run_session_warns_once_when_local_llm_skips_tools(
+    monkeypatch: Any, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A local speech-only turn with advertised tools should explain the Responses API gap."""
+    monkeypatch.setattr(
+        hf_mod,
+        "get_hf_connection_selection",
+        lambda: SimpleNamespace(mode=hf_mod.HF_LOCAL_CONNECTION_MODE),
+    )
+    done = _FakeEvent(
+        "response.done",
+        response=SimpleNamespace(status="completed", output=[SimpleNamespace(type="message")]),
+    )
+    handler = _plain_handler()
+    handler._advertised_tool_names = ["head_tracking", "dance"]
+    handler._turn_user_done_at = time.perf_counter()
+
+    with caplog.at_level(logging.WARNING, logger=hf_mod.logger.name):
+        await handler._on_response_done(done)
+        await handler._on_response_done(done)
+
+    warnings = [record.message for record in caplog.records if "chat-completions" in record.message]
+    assert len(warnings) == 1
 
 
 @pytest.mark.asyncio
