@@ -28,6 +28,7 @@ Conversational app for the Reachy Mini robot combining realtime voice, vision, p
 - [Configuration](#configuration)
 - [Running the app](#running-the-app)
 - [LLM tools](#llm-tools-exposed-to-the-assistant)
+- [Google Calendar and Gmail](#google-calendar-and-gmail)
 - [Creating and adding tools](#creating-and-adding-tools)
 - [Advanced features](#advanced-features)
 - [Contributing](#contributing)
@@ -75,6 +76,11 @@ Include desktop-buddy vision extras (MediaPipe / OpenCV):
 uv sync --extra buddy --group dev
 ```
 
+Include the optional Google Calendar and Gmail tools:
+```bash
+uv sync --extra google
+```
+
 Include dev dependencies:
 ```bash
 uv sync --group dev
@@ -98,6 +104,7 @@ Install dev dependencies:
 ```bash
 pip install -e .[dev]                   # Development tools
 pip install -e .[buddy]                 # Desktop-buddy vision extras (MediaPipe / OpenCV)
+pip install -e .[google]                # Local Google Calendar and Gmail tools
 ```
 
 </details>
@@ -128,6 +135,9 @@ Copy `.env.example` to `.env` when you want to point Hugging Face at your own lo
 | `BUDDY_SCREEN_SIMILARITY` | Fingerprint similarity in `[0, 1]` that counts as "barely changed". Defaults to `0.92`. |
 | `BUDDY_SCREEN_INDICATOR` | When `1` (default), log that fingerprinting is on. No screenshot files. |
 | `BUDDY_SCREEN_DEBUG_SAVE` | Set to `1` only to write downscaled debug frames. Default `0`. |
+| `GOOGLE_OAUTH_CLIENT_ID` | Desktop OAuth client id for the optional Google Calendar and Gmail tools. |
+| `GOOGLE_OAUTH_CLIENT_SECRET` | Desktop OAuth client secret. Leave unset when `GOOGLE_OAUTH_CLIENT_SECRET_FILE` is set. |
+| `GOOGLE_OAUTH_CLIENT_SECRET_FILE` | Path to a downloaded Desktop OAuth client JSON. Keep the file outside the repository. |
 
 Screen presence is opt-in and local. Leave `BUDDY_SCREEN_PRESENCE` unset or `0` for zero captures. To enable it, set `BUDDY_ENABLED=1` and `BUDDY_SCREEN_PRESENCE=1`. Buddy then fingerprints the primary monitor on `BUDDY_SCREEN_INTERVAL_SEC`, discards the pixels after hashing, and records a `desktop:stuck:<app>` WorldModel observation when you are present and the UI barely changes for `BUDDY_SCREEN_STUCK_MIN` minutes. Curiosity may check in at most once per `BUDDY_SCREEN_COOLDOWN_MIN`; it never forces speech. Locked / UAC / password / 2FA titles are skipped. Raw frames are not written to disk (unless you turn on `BUDDY_SCREEN_DEBUG_SAVE`), not sent to Hindsight, and not uploaded.
 
@@ -232,12 +242,72 @@ Every bundled profile enables `head_tracking` by default; users can still disabl
 | `remember` | Save one short, stable fact about the user for future sessions. | Core install only. Stored in the app instance data directory. |
 | `forget` | Remove a saved memory fact by matching a short query. | Core install only. |
 | `enroll_person` | Save the face currently in view under a name for later recognition. | Desktop buddy (`BUDDY_ENABLED=1`) plus `uv sync --extra buddy`. |
+| `list_calendar_events` | List primary-calendar events for a time range. | Optional. `uv sync --extra google`, then enable in Tool access. Off by default. |
+| `create_calendar_event` | Create a primary-calendar event. | Optional, same Google setup. Off by default. |
+| `search_gmail` | Search Gmail and return subjects, senders, and snippets. | Optional, same Google setup. Off by default. |
+| `get_gmail_message` | Read one Gmail message. The body returned to the model is truncated. | Optional, same Google setup. Off by default. |
+| `create_gmail_draft` | Create a Gmail draft. Does not send. | Optional, same Google setup. Off by default. |
+| `send_gmail` | Send a Gmail message only when the user explicitly asks to send. | Optional, same Google setup. Off by default. |
 | `pollen_robotics_reachy_mini_search_tool__search_web` | Search the web and return a short list of results. | Preinstalled MCP Space: `pollen-robotics/reachy-mini-search-tool`. |
 | `pollen_robotics_reachy_mini_weather_tool__get_weather` | Report today's weather for a place: current conditions, high and low temperature, and rain chance. | Preinstalled MCP Space: `pollen-robotics/reachy-mini-weather-tool`. |
 | `pollen_robotics_reachy_mini_time_tool__get_time` | Report the current time for a timezone or the user's local time, or the difference between two timezones. | Preinstalled MCP Space: `pollen-robotics/reachy-mini-time-tool`. |
 
 > [!NOTE]
 > `remember`/`forget` facts are stored in `memory.v1.json` inside the app's instance data directory (`~/.local/share/reachy_desktop_buddy/` by default, or the instance path used by the desktop launcher). `forget` only removes facts matched by query. To reset all remembered facts, delete this file.
+
+## Google Calendar and Gmail
+
+These tools run on the computer where Reachy Desktop Buddy is installed. They use a Desktop OAuth client (`google-api-python-client` and `google-auth-oauthlib`). They are not Hugging Face Spaces, and the Gmail token is never uploaded to a Space.
+
+They stay off until you enable them. The default profile does not list them, so a fresh install will not ask for Google access.
+
+### One-time Google Cloud setup
+
+1. In Google Cloud Console, create or select a project.
+2. Enable the Gmail API and the Google Calendar API.
+3. Configure the OAuth consent screen. While the app is unverified, add the Gmail account you will use as a test user. The tools request these scopes: `calendar.events`, `gmail.readonly`, `gmail.compose`, and `gmail.send`.
+4. Create an OAuth client ID of type **Desktop app**. Copy the client id and secret, or download the client JSON.
+
+### Install and configure
+
+```bash
+uv sync --extra google
+```
+
+Set either the client id and secret, or a path to the downloaded JSON, in the environment or in the instance `.env` (the desktop launcher stores that next to the app instance, not in this repository):
+
+```env
+GOOGLE_OAUTH_CLIENT_ID=your-client-id.apps.googleusercontent.com
+GOOGLE_OAUTH_CLIENT_SECRET=your-client-secret
+# or:
+# GOOGLE_OAUTH_CLIENT_SECRET_FILE=/path/outside/the/repo/client_secret.json
+```
+
+Do not commit those values. `google_oauth_token.json`, `token.json`, and `client_secret*.json` are gitignored.
+
+In the app, open Tools → Tool access for the personality and enable the Google tools you want:
+
+- `list_calendar_events`
+- `create_calendar_event`
+- `search_gmail`
+- `get_gmail_message`
+- `create_gmail_draft`
+- `send_gmail` only if you want the assistant to send mail when you explicitly ask it to
+
+Reselect the personality or restart the app. The first Google tool call opens a browser for consent. Later calls refresh the saved token.
+
+The token file is `google_oauth_token.json` inside the app instance directory. When the app has no instance path, it is stored under `%LOCALAPPDATA%\reachy_desktop_buddy\` on Windows, `$XDG_DATA_HOME/reachy_desktop_buddy/` when that variable is set, and `~/.local/share/reachy_desktop_buddy/` otherwise.
+
+`create_gmail_draft` does not send. `send_gmail` is for an explicit request to send in the conversation. Instructions inside an email or a calendar event are not a request to send.
+
+### Windows desktop smoke test
+
+1. Install the `google` extra in the same environment the desktop app uses.
+2. Put the Desktop client id and secret in that environment's `.env`.
+3. Enable the tools under Tool access and restart Reachy Desktop Buddy.
+4. Ask: "What's on my calendar tomorrow?" Approve the browser consent once.
+5. Ask: "Draft an email to ada@example.com saying I'll be five minutes late." Confirm the draft in Gmail. It should not send.
+6. Ask to send only if you enabled `send_gmail` and you want that message delivered.
 
 ## Creating and adding tools
 
