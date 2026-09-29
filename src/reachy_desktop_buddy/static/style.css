@@ -815,6 +815,68 @@ button {
   min-height: 1.4em;
 }
 
+/* Mirrored self-view, fixed to the lower left while the talk view is open. */
+.talk__cam {
+  position: fixed;
+  left: 20px;
+  bottom: 20px;
+  width: 280px;
+  aspect-ratio: 4 / 3;
+  border-radius: var(--radius);
+  overflow: hidden;
+  border: 1px solid var(--border-strong);
+  background: var(--bg-elev);
+  box-shadow: var(--shadow-lg);
+  z-index: 90;
+  opacity: 0;
+  transform: translateY(8px) scale(0.96);
+  pointer-events: none;
+  transition: opacity var(--transition), transform var(--transition);
+}
+
+.talk__cam--visible {
+  opacity: 1;
+  transform: none;
+}
+
+.talk__cam-video {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  transform: scaleX(-1);
+  background: var(--bg);
+}
+
+.talk__cam-label {
+  position: absolute;
+  left: 8px;
+  bottom: 6px;
+  font-size: 0.65rem;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text);
+  opacity: 0.8;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.7);
+}
+
+@media (max-width: 620px) {
+  .talk__cam {
+    left: 0;
+    right: 0;
+    margin-inline: auto;
+    bottom: 16px;
+    width: min(188px, 52vw);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .talk__cam {
+    transition: opacity var(--transition);
+    transform: none;
+  }
+}
+
 /* 6. Settings and tools views */
 
 .view--settings,

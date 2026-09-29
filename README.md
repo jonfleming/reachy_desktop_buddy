@@ -38,7 +38,7 @@ Conversational app for the Reachy Mini robot combining realtime voice, vision, p
 - Low-latency audio conversation through the Hugging Face realtime backend, using the built-in server or a local endpoint.
 - Vision is handled by the realtime backend when the `camera` tool is used.
 - Layered motion system queues primary moves (dances, emotions, goto poses, breathing) while blending speech-reactive wobble.
-- Async tools integrate motion, camera capture, and MCP Tool Spaces. The optional web UI (`--ui`) manages conversations, personalities, tools, and settings.
+- Async tools integrate motion, camera capture, and MCP Tool Spaces. The optional web UI (`--ui`) manages conversations, personalities, tools, and settings. The talk screen shows a mirrored webcam preview while that view is open.
 
 ## Architecture
 
@@ -211,6 +211,8 @@ reachy-desktop-buddy --no-camera
 # Launch with the minimal web UI for personality/mic/settings control
 reachy-desktop-buddy --ui
 ```
+
+The talk screen shows a mirrored preview of this browser's webcam in the lower left. The preview is local to the page; the assistant still sees through the robot `camera` tool.
 
 ## LLM tools exposed to the assistant
 

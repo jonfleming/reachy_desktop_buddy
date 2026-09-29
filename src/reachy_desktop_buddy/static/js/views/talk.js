@@ -3,6 +3,7 @@
  * Audio I/O runs entirely in Python; the orb doubles as the mic toggle.
  * Robot stays live, tapping the orb only mutes or unmutes the user's mic.
  * The slider next to the orb scales speaker playback (0..1) via conversation.volume.
+ * A mirrored webcam preview sits at the bottom-left while this view is open.
  */
 
 import {
@@ -14,6 +15,7 @@ import {
   setPlaybackVolume,
   subscribe,
 } from "../api.js";
+import { createWebcamPreview } from "../components/webcam.js";
 import { ORB_STATES } from "../constants.js";
 import { createOrb, mapActivityToState } from "../orb.js";
 import { consumePendingApply } from "../pending-apply.js";
@@ -81,14 +83,18 @@ export async function mountTalkView({ outlet, signal }) {
   });
   volumeSlider.addEventListener("input", onVolumeInput);
 
+  const webcam = createWebcamPreview();
+
   signal.addEventListener("abort", cleanup, { once: true });
 
   const view = h(
     "section",
     { class: "view view--talk" },
     h("div", { class: "talk__orb-row" }, h("div", { class: "talk__orb-wrap" }, orb.root), volumeSlider),
-    caption
+    caption,
+    webcam.root
   );
+  void webcam.start();
   outlet.replaceChildren(view);
 
   if (pending) {
@@ -151,6 +157,7 @@ export async function mountTalkView({ outlet, signal }) {
   });
 
   function cleanup() {
+    webcam.stop();
     subscription?.close();
     orb.dispose();
     if (defaultAction) {
